@@ -23,6 +23,12 @@ class DrawingCanvasView(
         strokeJoin = Paint.Join.ROUND
     }
 
+    /**
+     * 橡皮擦/像素橡皮擦的线宽倍率。预览与提交路径必须一致，
+     * 否则用户看到的擦除宽度与实际结果不符。
+     */
+    private val ERASER_WIDTH_FACTOR = 2f
+
     /** CLEAR 模式（API 29+ 用 BlendMode，更低版本用 PorterDuffXfermode） */
     private val clearBlend: Any? by lazy {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -158,12 +164,12 @@ class DrawingCanvasView(
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
             }
             paint.color = Color.TRANSPARENT
-            paint.strokeWidth = stroke.width * 2
+            paint.strokeWidth = stroke.width * ERASER_WIDTH_FACTOR
             paint.pathEffect = null
         } else {
             paint.xfermode = null
             paint.color = stroke.color
-            paint.strokeWidth = if (stroke.tool == DrawTool.ERASER) stroke.width * 2 else stroke.width
+            paint.strokeWidth = if (stroke.tool == DrawTool.ERASER) stroke.width * ERASER_WIDTH_FACTOR else stroke.width
             paint.pathEffect = if (stroke.tool == DrawTool.DASHED_LINE) {
                 DashPathEffect(floatArrayOf(12f * resources.displayMetrics.density, 8f * resources.displayMetrics.density), 0f)
             } else {
@@ -280,7 +286,7 @@ class DrawingCanvasView(
             }
             DrawTool.ERASER -> {
                 paint.color = android.graphics.Color.WHITE
-                paint.strokeWidth = engine.currentStrokeWidth * 3
+                paint.strokeWidth = engine.currentStrokeWidth * ERASER_WIDTH_FACTOR
                 if (currentPoints.size >= 2) {
                     drawPath(canvas, currentPoints)
                 }
@@ -467,9 +473,8 @@ class DrawingCanvasView(
                         DrawTool.ERASER -> {
                             currentPoints.add(DrawingPoint(x, y))
                             val eraserRadius = 40 * resources.displayMetrics.density
-                            for (pt in currentPoints) {
-                                engine.eraseAt(pt.x, pt.y, eraserRadius)
-                            }
+                            // 整段擦除轨迹合并为「一条」撤销记录（engine 内加锁，线程安全）
+                            engine.erasePath(currentPoints, eraserRadius)
                             // ERASER 删除了笔画，标记离屏缓冲需要重建
                             offscreenDirty = true
                         }

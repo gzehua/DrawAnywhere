@@ -42,7 +42,16 @@
         <service
             android:name="com.drawanywhere.service.OverlayService"
             android:exported="false"
-            android:foregroundServiceType="specialUse" />
+            android:foregroundServiceType="specialUse">
+            <!--
+                Android 14+（targetSdk 36）要求：声明 specialUse 前台服务类型时必须
+                提供 android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE 属性并给出用途说明，
+                否则系统校验 / Play 政策审查会失败。
+            -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="DrawAnywhere floating drawing canvas; type specialUse required to keep an always-on top overlay for inking." />
+        </service>
 
     </application>
 

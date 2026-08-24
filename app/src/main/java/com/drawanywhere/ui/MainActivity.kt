@@ -47,6 +47,14 @@ class MainActivity : AppCompatActivity() {
     private val batteryOptLauncher: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ -> }
 
+    private val notificationPermissionLauncher: ActivityResultLauncher<String> =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            // Android 13+ 通知权限：拒绝后前台服务照常运行，仅通知被屏蔽
+            if (!granted) {
+                Toast.makeText(this, "未授予通知权限，状态栏控件将不可见", Toast.LENGTH_LONG).show()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -60,6 +68,8 @@ class MainActivity : AppCompatActivity() {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_RELEASES_URL))
             startActivity(intent)
         }
+
+        requestNotificationPermission()
 
         if (Settings.canDrawOverlays(this)) {
             startOverlayService()
@@ -116,25 +126,29 @@ class MainActivity : AppCompatActivity() {
             conn.connectTimeout = 8000
             conn.readTimeout = 8000
             conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
-            val code = conn.responseCode
-            if (code == 404) return UpdateInfo("no_release", null)
-            if (code != 200) return null
-            val body = conn.inputStream.bufferedReader().readText()
-            val json = JSONObject(body)
-            val tag = json.getString("tag_name").removePrefix("v")
-            val assets = json.optJSONArray("assets")
-            var apkUrl: String? = null
-            if (assets != null) {
-                for (i in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(i)
-                    val name = asset.getString("name")
-                    if (name.endsWith(".apk")) {
-                        apkUrl = asset.getString("browser_download_url")
-                        break
+            try {
+                val code = conn.responseCode
+                if (code == 404) return UpdateInfo("no_release", null)
+                if (code != 200) return null
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(body)
+                val tag = json.getString("tag_name").removePrefix("v")
+                val assets = json.optJSONArray("assets")
+                var apkUrl: String? = null
+                if (assets != null) {
+                    for (i in 0 until assets.length()) {
+                        val asset = assets.getJSONObject(i)
+                        val name = asset.getString("name")
+                        if (name.endsWith(".apk")) {
+                            apkUrl = asset.getString("browser_download_url")
+                            break
+                        }
                     }
                 }
+                UpdateInfo(tag, apkUrl)
+            } finally {
+                conn.disconnect()
             }
-            UpdateInfo(tag, apkUrl)
         } catch (_: Exception) {
             null
         }
@@ -172,31 +186,37 @@ class MainActivity : AppCompatActivity() {
             .show()
 
         thread {
+            var apkFile: java.io.File? = null
             try {
                 val url = URL(info.apkUrl)
                 val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 10000
                 conn.readTimeout = 30000
                 conn.connect()
+                try {
+                    val dir = java.io.File(getExternalFilesDir(null), "Update")
+                    dir.mkdirs()
+                    apkFile = java.io.File(dir, "DrawAnywhere-v${info.tag}.apk")
+                    if (apkFile!!.exists()) apkFile!!.delete()
 
-                val dir = java.io.File(getExternalFilesDir(null), "Update")
-                dir.mkdirs()
-                val apkFile = java.io.File(dir, "DrawAnywhere-v${info.tag}.apk")
-                if (apkFile.exists()) apkFile.delete()
-
-                val input = conn.inputStream
-                val output = java.io.FileOutputStream(apkFile)
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    output.write(buffer, 0, bytesRead)
+                    // 用 use {} 确保任何异常时输入/输出流都被关闭
+                    conn.inputStream.buffered().use { input ->
+                        java.io.FileOutputStream(apkFile).buffered().use { output ->
+                            val buffer = ByteArray(8192)
+                            var bytesRead: Int
+                            while (input.read(buffer).also { bytesRead = it } != -1) {
+                                output.write(buffer, 0, bytesRead)
+                            }
+                        }
+                    }
+                } finally {
+                    conn.disconnect()
                 }
-                output.close()
-                input.close()
 
+                val finalFile = apkFile
                 runOnUiThread {
                     dialog.dismiss()
-                    installApk(apkFile)
+                    finalFile?.let { installApk(it) }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -308,6 +328,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun startOverlayService() {
         OverlayService.start(this)
+    }
+
+    /**
+     * Android 13+ 需要运行时请求 POST_NOTIFICATIONS，前台服务的常驻通知
+     * （含切换/退出操作）才会显示。拒绝不影响服务本身运行，故不强制阻塞。
+     */
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
     }
 
     private fun isZui(): Boolean {
